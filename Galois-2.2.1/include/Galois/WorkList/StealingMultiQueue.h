@@ -1,6 +1,10 @@
 #ifndef GALOIS_STEALINGMULTIQUEUE_H
 #define GALOIS_STEALINGMULTIQUEUE_H
 
+#include "Galois/optional.h"
+#include "Galois/Runtime/ll/CacheLineStorage.h"
+
+#include <cstring>
 #include <atomic>
 #include <cstdlib>
 #include <memory>
@@ -284,8 +288,7 @@ private:
 
   //! Tries to steal from a random queue.
   //! Repeats if failed because of a race.
-  Galois::optional<T> trySteal() {
-    static thread_local size_t tId = Galois::Runtime::LL::getTID();
+  Galois::optional<T> trySteal(int tId) {
     T localMin = heaps[tId].data.getMinWriter();
     bool nextIterNeeded = true;
     while (nextIterNeeded) {
@@ -316,8 +319,8 @@ private:
   }
 
 public:
-  StealingMultiQueue() : nQ(Galois::getActiveThreads()) {
-    memset(reinterpret_cast<void*>(&Heap::dummy), 0xff, sizeof(Heap::dummy));
+  StealingMultiQueue(int num_threads) : nQ(num_threads) {
+    std::memset(reinterpret_cast<void*>(&Heap::dummy), 0xff, sizeof(Heap::dummy));
     heaps = std::make_unique<Galois::Runtime::LL::CacheLineStorage<Heap>[]>(nQ);
     stealBuffers = std::make_unique<
                    Galois::Runtime::LL::CacheLineStorage<std::vector<T>>[]>(nQ);
@@ -344,8 +347,7 @@ public:
   }
 
   template<typename Iter>
-  unsigned int push(Iter b, Iter e) {
-    static thread_local size_t tId = Galois::Runtime::LL::getTID();
+  unsigned int push(int tId, Iter b, Iter e) {
     if (b == e) return 0;
     unsigned int pushedNum = 0;
     Heap* heap = &heaps[tId].data;
@@ -357,8 +359,7 @@ public:
     return pushedNum;
   }
 
-  Galois::optional<T> pop() {
-    static thread_local size_t tId = Galois::Runtime::LL::getTID();
+  Galois::optional<T> pop(int tId) {
     auto& buffer = stealBuffers[tId].data;
     if (!buffer.empty()) {
       auto val = buffer.back();
@@ -370,18 +371,17 @@ public:
     // rand == 0 -- try to steal
     // otherwise, pop locally
     if (nQ > 1 && random() % StealProb == 0) {
-      Galois::optional<T> stolen = trySteal();
+      Galois::optional<T> stolen = trySteal(tId);
       if (stolen.is_initialized()) return stolen;
     }
     auto minVal = heaps[tId].data.extractMin();
     if (minVal.is_initialized()) return minVal;
 
     // Our heap is empty.
-    return nQ == 1 ? emptyResult : trySteal();
+    return nQ == 1 ? emptyResult : trySteal(tId);
   }
 };
 
-GALOIS_WLCOMPILECHECK(StealingMultiQueue)
 
 }  // namespace WorkList
 }  // namespace Galois
